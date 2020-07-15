@@ -333,7 +333,7 @@ void dhcp_packet(time_t now, int pxe_fd)
 	return;
 
       lease_prune(NULL, now); /* lose any expired leases */
-      iov.iov_len = dhcp_reply(parm.current, ifr.ifr_name, iface_index, (size_t)sz, 
+      iov.iov_len = dhcp_reply(parm.current, arp_req.arp_dev, rcvd_iface_index, (size_t)sz,
 			       now, unicast_dest, &is_inform, pxe_fd, iface_addr);
       lease_update_file(now);
       lease_update_dns(0);
