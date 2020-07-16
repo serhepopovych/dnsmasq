@@ -1,0 +1,93 @@
+In default case to make two hosts to communicate over IP they both
+need to have at least one address each in same subnet. Each subnet
+has two reserved addresses:
+
+  network   with all host bits set to zero (0)
+  broadcast with all host bits set to one (1)
+
+Thus for two hosts we need at least 4 addresses that corresponds
+network mask 255.255.255.252 or /30 in CIDR notation.
+
+It is not problem with private (e.g. ones covered by rfc1918) address
+space but with limited number of public address space this suboptimal
+with many (e.g. subscribers per circuit) hosts connecting with one
+(e.g. Access Server terminating subscribers circuits). This is typical
+use case for ISP where thousands of circuits connecting to a single
+Access Server, where circuit could be implemented using 802.1q VLANs.
+
+There is optimization techniques for this known for a while, most
+successful of which is a so called (in this document and dnsmasq in
+a whole) unaddressed (or unnumbered by some network vendors).
+
+Linux and some other operating systems implement this for a while
+(however with limitations, see below) via net/ipv4/conf/default/arp_ignore
+sysctl interface that by default configured to reply for ARP requests
+for target IP address configured on any network interface.
+
+For unaddressed schema on Linux to work you need:
+-------------------------------------------------
+
+ 1) sysctl settings
+
+    # Reply for target IP configured on any interface (default)
+    sysctl -w net/ipv4/conf/default/arp_ignore=0
+    # Originate ARP requests with source IP from same subnet as target IP
+    sysctl -w net/ipv4/conf/default/arp_announce=2
+    # Permit communication of subscribers in different circuits
+    sysctl -w net/ipv4/conf/default/proxy_arp=1
+
+ 2) subscriber gateway IP address assigned on any interface
+
+    ip link add dev lo255 up type dummy
+    ip -4 addr add 192.0.2.1/24 dev lo255
+
+ 3) host route pointing to network interface representing circuit
+
+    ip -4 route add 192.0.2.2/32 dev en1.1 proto static src 192.0.2.1
+
+With Linux network stack at least following limitation(s) exist
+---------------------------------------------------------------
+
+ - if multiple network addresses configured on any host network
+   interfaces ARP requests sent by gateway to subscriber circuits
+   might have wrong (not within same subnet) source IP (i.e. sysctl
+   arp_announce does not work).
+
+   Some CPEs will ignore such ARP requests causing packet loss due
+   to aged out ARP cache entries on router.
+
+   Static ARP entries should be used as workaround and kernel patching
+   required to fix this problem.
+
+Support DHCP for IP unaddressed schema with dnsmasq
+---------------------------------------------------
+
+With DHCP configuration where address(es) configured on main (bridge)
+interface and host specific routes pointing to slave (alias)
+interface(s). For example:
+
+  ip link add dev lo255 up type dummy
+  ip -4 addr add 192.0.2.1/24 dev lo255
+  ip -4 addr add 198.51.100.1/24 dev lo255
+  ip -4 addr add 203.0.113.1/24 dev lo255
+
+  ip -4 addr flush dev en1.2
+  ip -4 addr flush dev en1.3
+
+  ip -4 route add 192.0.2.2/32 dev en1.2 proto dhcp src 192.0.2.1
+  ip -4 neigh add 192.0.2.2 dev en1.2 lladdr 00:11:22:33:44:55
+  ip -4 route add 198.51.100.2/32 dev en1.2 proto dhcp src 198.51.100.1
+  ip -4 neigh add 198.51.100.2 dev en1.2 lladdr 00:22:33:44:55:66
+  ip -4 route add 203.0.113.2/32 dev en1.2 proto dhcp src 203.0.113.1
+  ip -4 neigh add 203.0.113.2 dev en1.2 lladdr 00:33:44:55:66:77
+
+  ip -4 route add 192.0.2.3/32 dev en1.3 proto dhcp src 192.0.2.1
+  ip -4 route add 198.51.100.3/32 dev en1.3 proto dhcp src 198.51.100.1
+  ip -4 route add 203.0.113.3/32 dev en1.3 proto dhcp src 203.0.113.1
+
+  dnsmasq ... --bridge-interface='lo255,en1.*' ... \
+          ... --dhcp-script='/usr/local/lib/dnsmasq/ip-unaddr.sh' ...
+
+Note that you may want to raise --dhcp-lease-max from default 1000 to
+something greather depending on number of subscribers configured on
+your host.
