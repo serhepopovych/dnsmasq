@@ -27,6 +27,7 @@ void lease_init(time_t now)
   struct all_addr addr;
   struct dhcp_lease *lease;
   int clid_len, hw_len, hw_type;
+  int iface_index, items;
   FILE *leasestream;
   
   leases_left = daemon->dhcp_max;
@@ -67,8 +68,19 @@ void lease_init(time_t now)
   /* client-id max length is 255 which is 255*2 digits + 254 colons 
      borrow DNS packet buffer which is always larger than 1000 bytes */
   if (leasestream)
-    while (fscanf(leasestream, "%255s %255s", daemon->dhcp_buff3, daemon->dhcp_buff2) == 2)
+    while (1)
       {
+	iface_index = 0;
+again:
+	items = fscanf(leasestream, "%255s %255s", daemon->dhcp_buff3, daemon->dhcp_buff2);
+	if (items != 2)
+	  break;
+
+	if (strcmp(daemon->dhcp_buff3, "iface") == 0)
+	  {
+	    iface_index = if_nametoindex(daemon->dhcp_buff2);
+	    goto again;
+	  }
 #ifdef HAVE_DHCP6
 	if (strcmp(daemon->dhcp_buff3, "duid") == 0)
 	  {
@@ -144,7 +156,7 @@ void lease_init(time_t now)
 	   even when sizeof(time_t) == 8 */
 	lease->expires = (time_t)ei;
 #endif
-	
+	lease->last_interface = iface_index;
 	/* set these correctly: the "old" events are generated later from
 	   the startup synthesised SIGHUP. */
 	lease->flags &= ~(LEASE_NEW | LEASE_CHANGED);
@@ -212,6 +224,7 @@ static void ourprintf(int *errp, char *format, ...)
 void lease_update_file(time_t now)
 {
   struct dhcp_lease *lease;
+  char iface_name[IF_NAMESIZE];
   time_t next_event;
   int i, err = 0;
 
@@ -229,6 +242,8 @@ void lease_update_file(time_t now)
 	  if (lease->flags & (LEASE_TA | LEASE_NA))
 	    continue;
 #endif
+	  if (if_indextoname(lease->last_interface, iface_name))
+	    ourprintf(&err, "iface %s ", iface_name);
 
 #ifdef HAVE_BROKEN_RTC
 	  ourprintf(&err, "%u ", lease->length);
@@ -273,6 +288,9 @@ void lease_update_file(time_t now)
 	      
 	      if (!(lease->flags & (LEASE_TA | LEASE_NA)))
 		continue;
+
+	      if (if_indextoname(lease->last_interface, iface_name))
+		ourprintf(&err, "iface %s ", iface_name);
 
 #ifdef HAVE_BROKEN_RTC
 	      ourprintf(&err, "%u ", lease->length);
@@ -426,6 +444,8 @@ void lease_update_slaac(time_t now)
 void lease_find_interfaces(time_t now)
 {
   struct dhcp_lease *lease;
+  struct dhcp_bridge *bridge, *alias;
+  char iface_name[IF_NAMESIZE];
   
   for (lease = leases; lease; lease = lease->next)
     lease->new_prefixlen = lease->new_interface = 0;
@@ -436,8 +456,33 @@ void lease_find_interfaces(time_t now)
 #endif
 
   for (lease = leases; lease; lease = lease->next)
-    if (lease->new_interface != 0) 
+    {
+      if (lease->new_interface == 0 ||
+	  lease->last_interface == lease->new_interface)
+	continue;
+
+      if (lease->last_interface != 0)
+	{
+	  if (!if_indextoname(lease->new_interface, iface_name))
+	    continue;
+
+	  for (bridge = daemon->bridges; bridge; bridge = bridge->next)
+	    {
+	      if (strcmp(bridge->iface, iface_name))
+		continue;
+	      if (!if_indextoname(lease->last_interface, iface_name))
+		break;
+
+	      for (alias = bridge->alias; alias; alias = alias->next)
+		if (wildcard_matchn(alias->iface, iface_name, IF_NAMESIZE))
+		  goto next;
+	    }
+	}
+
       lease_set_interface(lease, lease->new_interface, now);
+next:
+      continue;
+    }
 }
 
 #ifdef HAVE_DHCP6
